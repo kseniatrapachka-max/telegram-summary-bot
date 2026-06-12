@@ -1,67 +1,67 @@
 #!/usr/bin/env python3
 """
 Telegram Summary Bot for Ksenia
-Uses Supadata API for YouTube transcripts + OpenRouter for voice rewrite
+Supadata for YouTube transcripts + Gemini for voice rewrite
 """
 
 import logging
 import requests
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ChatAction
-import re
 
 # ==================== CONFIGURATION ====================
-OPENROUTER_KEY = "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"
 TELEGRAM_TOKEN = "8849119684:AAGxdB3cehF_8SL1s9_1sCX2ZgBwv0fOJlA"
 SUPADATA_KEY = "sd_f36335dc0ed52aa9cd950726878096ef"
+GEMINI_KEY = "AQ.Ab8RN6K_-ioT7GjxocxmqW6Kwwp9Zv7Jm-HVG1hmB5sr8rfX0w"
 
-OPENROUTER_URL = "https://api.openrouter.ai/api/v1/messages"
 SUPADATA_URL = "https://api.supadata.ai/v1/youtube/transcript"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== KSENIA'S VOICE PROMPT ====================
-KSENIA_VOICE_PROMPT = """You are creating summaries for Ksenia, a 24-year-old art director in Warsaw.
+SYSTEM_PROMPT = """Ты создаёшь саммари для Ксении, 24-летнего арт-директора в Варшаве.
 
-HER VOICE:
-- Smart, ironic Russian-speaking friend. Direct, honest.
-- No corporate tone, no hedging, no filler.
-- Uses: типа, короче, рил, реально, жиза, вайб, прям, если честно
-- Code-switches Russian + Polish (plis, spoki, chekni) + English naturally
-- Short sentences after long ones (rhythm)
-- Personal address (ты), concrete examples, no obvious statements
-- No em-dashes, no "not only X but also Y"
-- Ends on strongest insight, not summary
+ЕЁ ГОЛОС:
+- Умный, ироничный русскоязычный друг. Прямой, честный.
+- Никакого корпоративного тона, никаких оговорок, никакого филлера.
+- Использует: типа, короче, рил, реально, жиза, вайб, прям, если честно
+- Переключается русский + польский (plis, spoki) + английский естественно
+- Короткие предложения после длинных (ритм)
+- Обращение на ты, конкретные примеры, никаких очевидных утверждений
+- Без тире, без "не только X но и Y"
+- Заканчивает на самой сильной мысли, не на резюме
 
-CONTENT TO SUMMARIZE:
+КОНТЕНТ ДЛЯ САММАРИ:
 {content}
 
-TASK:
-1. Break into 4-6 chapters (max)
-2. For each chapter: hook → core idea → concrete example → why it matters
-3. Rewrite in her voice (smart friend, not textbook)
-4. Add tags: 🔧 ЛАЙФХАК / 💬 ЦИТАТА / 📊 ФАКТ / 💡 ИНСАЙТ / 🎯 ДЛЯ ТЕБЯ
-5. End each chapter on strongest thought, no summary
-6. Write in RUSSIAN
+ЗАДАЧА:
+1. Разбей на 4-6 глав максимум
+2. Для каждой главы: хук → основная идея → конкретный пример → почему это важно
+3. Перепиши в её голосе (умный друг, не учебник)
+4. Добавь теги: 🔧 ЛАЙФХАК / 💬 ЦИТАТА / 📊 ФАКТ / 💡 ИНСАЙТ / 🎯 ДЛЯ ТЕБЯ
+5. Каждая глава заканчивается на сильной мысли, без резюме
+6. Пиши на РУССКОМ
 
-OUTPUT FORMAT:
-📺 [Title]
-
----
-
-ГЛАВА 1: [Title]
-[Summary in Ksenia's voice]
-[Tags]
+ФОРМАТ:
+📺 [Название видео]
 
 ---
 
-ГЛАВА 2: [Title]
+ГЛАВА 1: [Название]
+[Саммари в голосе Ксении, макс 3 предложения на абзац]
+[Теги]
+
+---
+
+ГЛАВА 2: [Название]
 ...
 """
 
-# ==================== SUPADATA - YOUTUBE TRANSCRIPT ====================
+# ==================== SUPADATA ====================
 def extract_youtube_id(url: str) -> str:
     patterns = [
         r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
@@ -73,167 +73,132 @@ def extract_youtube_id(url: str) -> str:
             return match.group(1)
     return None
 
-async def get_youtube_transcript(url: str) -> str:
-    logger.info(f"Getting transcript via Supadata: {url}")
-    
+async def get_transcript(url: str) -> str:
+    logger.info(f"Getting transcript: {url}")
     try:
         video_id = extract_youtube_id(url)
         if not video_id:
             return None
 
-        response = requests.get(
+        r = requests.get(
             SUPADATA_URL,
             params={"videoId": video_id, "lang": "en", "text": "true"},
             headers={"x-api-key": SUPADATA_KEY},
             timeout=30
         )
-        
-        logger.info(f"Supadata response: {response.status_code} - {response.text[:200]}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            # Supadata returns content field with the transcript text
+        logger.info(f"Supadata: {r.status_code} {r.text[:300]}")
+
+        if r.status_code == 200:
+            data = r.json()
             content = data.get("content") or data.get("transcript") or data.get("text")
             if content:
                 if isinstance(content, list):
-                    content = " ".join([c.get("text", "") for c in content])
-                logger.info(f"Got transcript: {len(content)} chars")
+                    content = " ".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content])
                 return content
-        
-        logger.error(f"Supadata error: {response.status_code} {response.text}")
         return None
-        
     except Exception as e:
-        logger.error(f"Supadata exception: {e}")
+        logger.error(f"Supadata error: {e}")
         return None
 
-# ==================== OPENROUTER - REWRITE ====================
-async def rewrite_in_ksenia_voice(content: str) -> str:
-    logger.info(f"Rewriting {len(content)} chars")
+# ==================== GEMINI ====================
+async def rewrite_with_gemini(content: str) -> str:
+    logger.info(f"Rewriting with Gemini ({len(content)} chars)")
     
-    # Trim content if too long
     if len(content) > 8000:
         content = content[:8000] + "..."
-    
-    payload = {
-        "model": "qwen/qwen-3-235b-a22b:free",
-        "messages": [{"role": "user", "content": KSENIA_VOICE_PROMPT.format(content=content)}],
-        "max_tokens": 3000
-    }
-    
+
+    prompt = SYSTEM_PROMPT.format(content=content)
+
     try:
-        response = requests.post(
-            OPENROUTER_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json"
-            },
+        r = requests.post(
+            GEMINI_URL,
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            headers={"Content-Type": "application/json"},
             timeout=120
         )
-        response.raise_for_status()
-        data = response.json()
-        
-        if "choices" in data and len(data["choices"]) > 0:
-            return data["choices"][0]["message"]["content"]
-        
-        logger.error(f"No choices: {data}")
-        return None
-        
+        logger.info(f"Gemini: {r.status_code} {r.text[:200]}")
+        r.raise_for_status()
+
+        data = r.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        logger.error(f"OpenRouter error: {e}")
+        logger.error(f"Gemini error: {e}")
         return None
 
-# ==================== TELEGRAM HANDLERS ====================
+# ==================== HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! 👋\n\n"
-        "Отправь YouTube ссылку — я вытащу транскрипт и перепишу в твоём стиле.\n\n"
+        "Отправь YouTube ссылку — сделаю саммари в твоём стиле.\n\n"
         "• https://youtu.be/...\n"
         "• https://www.youtube.com/watch?v=..."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
-    
+    text = update.message.text or ""
+
     try:
-        text = update.message.text or ""
-        
         if "youtube.com" in text or "youtu.be" in text:
-            url = text.strip()
-            
             await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-            status_msg = await update.message.reply_text("⏳ Вытаскиваю транскрипт...")
-            
-            content = await get_youtube_transcript(url)
-            
+            status = await update.message.reply_text("⏳ Вытаскиваю транскрипт...")
+
+            content = await get_transcript(text.strip())
+
             if not content or len(content) < 50:
-                await status_msg.edit_text(
-                    "❌ Не удалось получить транскрипт.\n\n"
-                    "Возможные причины:\n"
-                    "• Видео без субтитров\n"
-                    "• Видео закрытое или удалённое\n\n"
+                await status.edit_text(
+                    "❌ Нет транскрипта.\n\n"
+                    "Видео без субтитров или закрытое.\n"
                     "Попробуй другое видео."
                 )
                 return
-            
-            await status_msg.edit_text("⏳ Переписываю в твоём стиле...")
-            
-            summary = await rewrite_in_ksenia_voice(content)
-            
+
+            await status.edit_text("⏳ Переписываю в твоём стиле...")
+
+            summary = await rewrite_with_gemini(content)
+
             if not summary:
-                await status_msg.edit_text("❌ Ошибка при переписывании. Попробуй снова.")
+                await status.edit_text("❌ Ошибка Gemini. Попробуй снова.")
                 return
-            
-            await status_msg.delete()
-            
+
+            await status.delete()
+
             keyboard = [
                 [
-                    InlineKeyboardButton("📝 КОРОТКО", callback_data="preset_short"),
-                    InlineKeyboardButton("📖 ПОДРОБНО", callback_data="preset_full")
+                    InlineKeyboardButton("📝 КОРОТКО", callback_data="short"),
+                    InlineKeyboardButton("📖 ПОДРОБНО", callback_data="full")
                 ],
                 [
-                    InlineKeyboardButton("💬 ЦИТАТЫ", callback_data="preset_quotes"),
-                    InlineKeyboardButton("🔧 ЛАЙФХАКИ", callback_data="preset_hacks")
+                    InlineKeyboardButton("💬 ЦИТАТЫ", callback_data="quotes"),
+                    InlineKeyboardButton("🔧 ЛАЙФХАКИ", callback_data="hacks")
                 ],
-                [InlineKeyboardButton("💡 ИНСАЙТЫ", callback_data="preset_insights")]
+                [InlineKeyboardButton("💡 ИНСАЙТЫ", callback_data="insights")]
             ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             if len(summary) > 4000:
                 parts = [summary[i:i+4000] for i in range(0, len(summary), 4000)]
                 for i, part in enumerate(parts):
-                    if i == len(parts) - 1:
-                        await update.message.reply_text(part, reply_markup=reply_markup)
-                    else:
-                        await update.message.reply_text(part)
+                    markup = InlineKeyboardMarkup(keyboard) if i == len(parts) - 1 else None
+                    await update.message.reply_text(part, reply_markup=markup)
             else:
-                await update.message.reply_text(summary, reply_markup=reply_markup)
-        
+                await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
+
         else:
             await update.message.reply_text(
                 "Отправь YouTube ссылку:\n"
                 "• https://youtu.be/...\n"
                 "• https://www.youtube.com/watch?v=..."
             )
-    
+
     except Exception as e:
-        logger.error(f"Handler error: {e}")
+        logger.error(f"Error: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:150]}")
 
 async def preset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    preset_names = {
-        "preset_short": "📝 КОРОТКО",
-        "preset_full": "📖 ПОДРОБНО",
-        "preset_quotes": "💬 ЦИТАТЫ",
-        "preset_hacks": "🔧 ЛАЙФХАКИ",
-        "preset_insights": "💡 ИНСАЙТЫ"
-    }
-    await query.edit_message_text(
-        f"{preset_names.get(query.data, query.data)} — выбрано!\n\nФункция в разработке 🚀"
-    )
+    names = {"short": "📝 КОРОТКО", "full": "📖 ПОДРОБНО", "quotes": "💬 ЦИТАТЫ", "hacks": "🔧 ЛАЙФХАКИ", "insights": "💡 ИНСАЙТЫ"}
+    await query.edit_message_text(f"{names.get(query.data, query.data)} — скоро будет 🚀")
 
 # ==================== MAIN ====================
 def main():
@@ -242,8 +207,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
     app.add_handler(CallbackQueryHandler(preset_handler))
-    logger.info("Bot polling...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
