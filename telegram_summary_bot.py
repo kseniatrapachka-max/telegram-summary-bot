@@ -91,10 +91,12 @@ async def get_transcript(url: str) -> str:
         if r.status_code == 200:
             data = r.json()
             content = data.get("content") or data.get("transcript") or data.get("text")
-            if content:
-                if isinstance(content, list):
-                    content = " ".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content])
+            if not content:
+                return None
+            if isinstance(content, str):
                 return content
+            if isinstance(content, list):
+                return " ".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content])
         return None
     except Exception as e:
         logger.error(f"Supadata error: {e}")
@@ -214,4 +216,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
