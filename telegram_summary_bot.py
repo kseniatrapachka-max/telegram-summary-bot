@@ -14,10 +14,10 @@ from telegram.constants import ChatAction
 # ==================== CONFIGURATION ====================
 TELEGRAM_TOKEN = "8849119684:AAGxdB3cehF_8SL1s9_1sCX2ZgBwv0fOJlA"
 SUPADATA_KEY = "sd_f36335dc0ed52aa9cd950726878096ef"
-GEMINI_KEY = "AQ.Ab8RN6K_-ioT7GjxocxmqW6Kwwp9Zv7Jm-HVG1hmB5sr8rfX0w"
+GEMINI_KEY = "AQ.Ab8RN6J_tl5L8bLleRCXFovQpWvEyLG7uboc4AfWMWSQht2HLQ"
 
 SUPADATA_URL = "https://api.supadata.ai/v1/youtube/transcript"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ async def get_transcript(url: str) -> str:
 # ==================== GEMINI ====================
 async def rewrite_with_gemini(content: str) -> str:
     logger.info(f"Rewriting with Gemini ({len(content)} chars)")
-    
+
     if len(content) > 8000:
         content = content[:8000] + "..."
 
@@ -112,11 +112,14 @@ async def rewrite_with_gemini(content: str) -> str:
     try:
         r = requests.post(
             GEMINI_URL,
+            headers={
+                "Content-Type": "application/json",
+                "X-goog-api-key": GEMINI_KEY
+            },
             json={"contents": [{"parts": [{"text": prompt}]}]},
-            headers={"Content-Type": "application/json"},
             timeout=120
         )
-        logger.info(f"Gemini: {r.status_code} {r.text[:200]}")
+        logger.info(f"Gemini: {r.status_code} {r.text[:300]}")
         r.raise_for_status()
 
         data = r.json()
